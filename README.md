@@ -69,9 +69,11 @@ Progreso: `window.__storageProgress(callId, {phase, index, total, name, percent}
 - Solo fotos y videos. Los archivos generales (PDF, APK, ZIP) no se leen en esta versión.
 - Miniaturas: el nativo sirve `/thumb/<id>` con `ContentResolver.loadThumbnail` (256 px). Se usan
   para la vista previa, dHash y nitidez (también decodifica HEIC). Si fallan, se usa el archivo completo.
-- Videos: la duración viene de MediaStore y no se abre el video. El servidor interno no soporta
-  rangos HTTP; si alguna vez se reproduce el video dentro de la app y el seek falla, la solución
-  es responder `206 Partial Content` en `MediaPathHandler`.
+- Videos: la duración viene de MediaStore y no se abre el video al analizar.
+- Vista previa: al tocar un elemento se ve la foto o se reproduce el video. `/media/<id>` responde
+  a `Range` con `206 Partial Content` (en `shouldInterceptRequest`, porque el PathHandler no ve
+  cabeceras), así funciona adelantar y retroceder. Si el WebView no decodifica una foto (HEIC),
+  se muestra la miniatura del sistema. «Abrir en la galería» usa `ACTION_VIEW` con el content://.
 - Huella parcial (> 64 MB): se leen solo el inicio y el final con `/part/<id>/<inicio>/<largo>`.
 - Análisis en la APK: nativo (`Analyzer.kt`) con 2 a 6 hilos; mismo algoritmo que el JS (dHash 9x8,
   varianza del Laplaciano 64x64 y SHA-256). Resultados en caché (`localStorage`, `featCache.v1`) por

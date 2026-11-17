@@ -67,6 +67,8 @@ main{padding:4px 16px calc(var(--safe-b) + 140px)}
 dialog{background:var(--surface);color:var(--text);border:1px solid var(--line);border-radius:20px;
   padding:20px;width:min(92vw,520px);max-height:85vh;overflow:auto}
 dialog::backdrop{background:rgba(0,0,0,.7)}
+.preview{display:block;width:100%;max-height:60vh;object-fit:contain;border-radius:12px;
+  background:var(--surface-2);margin:0 0 14px}
 dl{display:grid;grid-template-columns:auto 1fr;gap:10px 16px;margin:0}
 dt{color:var(--muted);font-size:13px}
 dd{margin:0;word-break:break-word}
@@ -221,6 +223,9 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
   if (typeof A.analyze === 'function') {
     window.StorageBridge.analyze = (jobs, cfg, onProgress) =>
       call('analyze', [JSON.stringify(jobs), JSON.stringify(cfg)], onProgress).then(JSON.parse);
+  }
+  if (typeof A.openExternal === 'function') {
+    window.StorageBridge.openExternal = id => call('openExternal', [id]);
   }
   if (typeof A.pickThumbs === 'function') {
     window.StorageBridge.pickThumbs = () => call('pickThumbs', []).then(JSON.parse);
@@ -818,6 +823,30 @@ function renderBar() {
   $('#btnDelete').textContent = bridge ? 'Mover a papelera' : 'Quitar de la lista';
 }
 
+/* ---------- Vista previa ---------- */
+function previewHTML(it) {
+  if (it.kind === 'image') {
+    // Si el WebView no decodifica el formato (p. ej. HEIC), se usa la miniatura del sistema
+    const fb = it.thumbUrl || (typeof it.thumb === 'string' ? it.thumb : '');
+    return `<img class="preview" src="${esc(it.url)}" alt="${esc(it.name)}" data-fallback="${esc(fb)}">`;
+  }
+  if (it.kind === 'video') {
+    const poster = it.thumbUrl ? ` poster="${esc(it.thumbUrl)}"` : '';
+    return `<video class="preview" src="${esc(it.url)}" controls playsinline preload="metadata"${poster}></video>`;
+  }
+  return '';
+}
+
+function stopPreview() {
+  const v = $('#detailBody video');
+  if (v) { v.pause(); v.removeAttribute('src'); v.load(); }
+}
+
+async function openExternal(id) {
+  try { await bridge.openExternal(id); }
+  catch (e) { toast(e && e.message ? e.message : 'No se pudo abrir.'); }
+}
+
 /* ---------- Acciones ---------- */
 function toggle(id) {
   if (selected.has(id)) selected.delete(id);
@@ -865,7 +894,9 @@ function openDetail(id) {
   if (it.error) rows.push(['Aviso', 'No se pudo analizar el contenido']);
 
   $('#detailBody').innerHTML = `
+    ${previewHTML(it)}
     <h2 style="font-size:17px;margin:0 0 14px;word-break:break-word">${esc(it.name)}</h2>
+    ${bridge && bridge.openExternal ? `<button class="btn ghost sm" id="detailOpen" data-id="${esc(it.id)}" style="margin:0 0 14px">Abrir en la galería</button>` : ''}
     <dl>${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('')}</dl>`;
   const btn = $('#detailToggle');
   btn.dataset.id = id;
@@ -982,6 +1013,18 @@ $('#detailToggle').addEventListener('click', () => {
   btn.textContent = selected.has(id) ? 'Quitar selección' : 'Seleccionar';
 });
 $('#detailClose').addEventListener('click', () => $('#detail').close());
+$('#detail').addEventListener('close', stopPreview);
+$('#detailBody').addEventListener('click', e => {
+  const b = e.target.closest('#detailOpen');
+  if (b) { stopPreview(); openExternal(b.dataset.id); }
+});
+$('#detailBody').addEventListener('error', e => {
+  const img = e.target;
+  if (img.tagName === 'IMG' && img.dataset.fallback && img.src !== img.dataset.fallback) img.src = img.dataset.fallback;
+  else if (img.classList && img.classList.contains('preview')) img.replaceWith(Object.assign(document.createElement('p'), {
+    className: 'muted small', textContent: 'No se puede mostrar aquí. Usa «Abrir en la galería».'
+  }));
+}, true);
 
 $('#btnClear').addEventListener('click', () => {
   selected.clear();
@@ -1094,10 +1137,10 @@ async function compFind() {
 function compRowHTML(it) {
   const on = comp.sel.has(it.id);
   return `<div class="item">
-    <div class="open">${thumbHTML(it)}<span class="info">
+    <button class="open" data-copen="${esc(it.id)}">${thumbHTML(it)}<span class="info">
       <span class="name">${esc(it.name)}</span>
       <span class="meta">${esc(fmtSize(it.size))} → ~${esc(fmtSize(it.est))}${it.w && it.h ? ' · ' + it.w + '×' + it.h : ''}${it.duration ? ' · ' + fmtDur(it.duration) : ''}</span>
-    </span></div>
+    </span></button>
     <button class="check" role="checkbox" aria-checked="${on}" aria-label="Seleccionar ${esc(it.name)}" data-ccheck="${esc(it.id)}"></button>
   </div>`;
 }
@@ -1193,6 +1236,8 @@ $('#compCard').addEventListener('click', e => {
 });
 $('#btnCompFind').addEventListener('click', compFind);
 $('#compList').addEventListener('click', e => {
+  const op = e.target.closest('[data-copen]');
+  if (op && bridge.openExternal) { openExternal(op.dataset.copen); return; }
   const chk = e.target.closest('[data-ccheck]');
   if (!chk) return;
   const id = chk.dataset.ccheck;

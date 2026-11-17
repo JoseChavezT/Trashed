@@ -11,6 +11,7 @@ import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Size
@@ -27,6 +28,7 @@ import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewAssetLoader
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.InputStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.FileInputStream
@@ -144,7 +146,16 @@ class MainActivity : ComponentActivity() {
                 override fun shouldInterceptRequest(
                     view: WebView,
                     request: WebResourceRequest
-                ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+                ): WebResourceResponse? {
+                    val url = request.url
+                    // Los videos piden tramos (Range) para conocer la duración y poder adelantar
+                    if (url.host == DOMAIN && url.path?.startsWith("/media/") == true) {
+                        val range = request.requestHeaders.entries
+                            .firstOrNull { it.key.equals("Range", ignoreCase = true) }?.value
+                        if (range != null) return mediaRange(url.path!!.removePrefix("/media/"), range)
+                    }
+                    return assetLoader.shouldInterceptRequest(url)
+                }
             }
             addJavascriptInterface(StorageInterface(), "AndroidStorage")
         }
@@ -276,6 +287,23 @@ class MainActivity : ComponentActivity() {
                     respond(callId, false, "No se pudieron borrar: ${e.message}")
                 }
             }.start()
+        }
+
+        /** Abre el archivo en la galería o el reproductor del teléfono. */
+        @JavascriptInterface
+        fun openExternal(callId: String, id: String) {
+            val uri = knownUris[id] ?: return respond(callId, false, "Archivo desconocido")
+            runOnUiThread {
+                try {
+                    val intent = Intent(Intent.ACTION_VIEW)
+                        .setDataAndType(uri, contentResolver.getType(uri))
+                        .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                    startActivity(intent)
+                    respond(callId, true, "{}")
+                } catch (e: Exception) {
+                    respond(callId, false, "No hay una app para abrir este archivo")
+                }
+            }
         }
 
         @JavascriptInterface
@@ -439,11 +467,14 @@ class MainActivity : ComponentActivity() {
         override fun handle(path: String): WebResourceResponse? {
             val uri = knownUris[path] ?: return null
             return try {
-                val stream = contentResolver.openInputStream(uri) ?: return null
+                val pfd = contentResolver.openFileDescriptor(uri, "r") ?: return null
+                val size = pfd.statSize
+                val stream = ParcelFileDescriptor.AutoCloseInputStream(pfd)
+                val headers = mutableMapOf("Accept-Ranges" to "bytes")
+                if (size >= 0) headers["Content-Length"] = size.toString()
                 WebResourceResponse(
                     contentResolver.getType(uri) ?: "application/octet-stream",
-                    null,
-                    stream
+                    null, 200, "OK", headers, stream
                 )
             } catch (e: Exception) {
                 null
@@ -497,6 +528,69 @@ class MainActivity : ComponentActivity() {
                 null
             }
         }
+    }
+
+    /** Respuesta 206 para "Range: bytes=inicio-fin". Null para ids desconocidos. */
+    private fun mediaRange(id: String, range: String): WebResourceResponse? {
+        val uri = knownUris[id] ?: return null
+        return try {
+            val pfd = contentResolver.openFileDescriptor(uri, "r") ?: return null
+            val size = pfd.statSize
+            val m = Regex("bytes=(\\d*)-(\\d*)").find(range)
+            val mime = contentResolver.getType(uri) ?: "application/octet-stream"
+            if (m == null || size < 0) {
+                return WebResourceResponse(mime, null, 200, "OK", mapOf("Accept-Ranges" to "bytes"),
+                    ParcelFileDescriptor.AutoCloseInputStream(pfd))
+            }
+            val (a, b) = m.destructured
+            var start: Long
+            var end: Long
+            if (a.isEmpty()) {            // bytes=-N: los últimos N bytes
+                start = maxOf(0L, size - (b.toLongOrNull() ?: 0L))
+                end = size - 1
+            } else {
+                start = a.toLong()
+                end = if (b.isEmpty()) size - 1 else minOf(b.toLong(), size - 1)
+            }
+            if (start >= size || start > end) {
+                pfd.close()
+                return WebResourceResponse(mime, null, 416, "Range Not Satisfiable",
+                    mapOf("Content-Range" to "bytes */$size"), null)
+            }
+            val input = ParcelFileDescriptor.AutoCloseInputStream(pfd)
+            input.channel.position(start)
+            val len = end - start + 1
+            WebResourceResponse(
+                mime, null, 206, "Partial Content",
+                mapOf(
+                    "Accept-Ranges" to "bytes",
+                    "Content-Range" to "bytes $start-$end/$size",
+                    "Content-Length" to len.toString()
+                ),
+                LimitedStream(input, len)
+            )
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Lee como máximo [left] bytes. */
+    private class LimitedStream(private val inner: InputStream, private var left: Long) : InputStream() {
+        override fun read(): Int {
+            if (left <= 0) return -1
+            val r = inner.read()
+            if (r >= 0) left--
+            return r
+        }
+
+        override fun read(b: ByteArray, off: Int, len: Int): Int {
+            if (left <= 0) return -1
+            val n = inner.read(b, off, minOf(len.toLong(), left).toInt())
+            if (n > 0) left -= n
+            return n
+        }
+
+        override fun close() = inner.close()
     }
 
     /* ---------- Papelera del sistema ---------- */
