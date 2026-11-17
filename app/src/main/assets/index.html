@@ -165,6 +165,8 @@ dd{margin:0;word-break:break-word}
    Contrato que debe implementar el lado nativo:
      listMedia() -> Promise<[{ id, name, size, mime, dateModified, width?, height?, duration?, url }]>
        url: ruta que el WebView puede leer (por ejemplo, Capacitor.convertFileSrc).
+       thumb (opcional): miniatura JPEG generada por el sistema.
+       Si url es https://<host>/media/<id>, el nativo sirve tramos en /part/<id>/<inicio>/<largo>.
      trash(ids: string[]) -> Promise<{ trashed: string[] }>
        Usa MediaStore.createTrashRequest (Android 11+) y devuelve los ids confirmados.
    Sin puente funciona con el selector de archivos y no toca archivos reales. */
@@ -179,6 +181,8 @@ const CFG = {
   BLUR_MAX: 60,                      // varianza del Laplaciano en 64x64; por debajo = borrosa
   LARGE_BYTES: 100 * 1024 * 1024,
   THUMB_PX: 120,
+  WORKERS: 4,                        // elementos analizados a la vez
+  ITEM_TIMEOUT_MS: 30000,            // si un elemento tarda más, se marca con aviso y se sigue
   SCREENSHOT_RE: /screen[\s_-]?shot|captura|pantalla/i
 };
 
@@ -235,7 +239,7 @@ function normalizeBridge(list) {
   return list.map(m => ({
     id: String(m.id), name: m.name || 'Sin nombre', size: Number(m.size) || 0, mime: m.mime || '',
     date: Number(m.dateModified) || 0, kind: kindOf(m.mime || '', m.name || ''), src: null, url: m.url,
-    w: m.width || null, h: m.height || null, duration: m.duration || null
+    w: m.width || null, h: m.height || null, duration: m.duration || null, thumbUrl: m.thumb || null
   }));
 }
 
@@ -261,6 +265,24 @@ async function fingerprint(blob) {
   const tail = await blob.slice(Math.max(0, blob.size - n)).arrayBuffer();
   const meta = new TextEncoder().encode('size:' + blob.size).buffer;
   return { type: 'parcial', hash: await sha256(concat(meta, head, tail)) };
+}
+
+/* Misma huella que fingerprint(), pero leyendo solo los tramos necesarios del nativo. */
+async function fingerprintItem(it) {
+  if (!(it.src instanceof Blob) && it.size > CFG.FULL_HASH_MAX && /\/media\//.test(it.url)) {
+    const n = CFG.PARTIAL_CHUNK;
+    const part = async (start, len) => {
+      const r = await fetch(it.url.replace('/media/', '/part/') + '/' + start + '/' + len);
+      if (!r.ok) throw new Error('tramo');
+      return r.arrayBuffer();
+    };
+    const head = await part(0, Math.min(n, it.size));
+    const tailStart = Math.max(0, it.size - n);
+    const tail = await part(tailStart, it.size - tailStart);
+    const meta = new TextEncoder().encode('size:' + it.size).buffer;
+    return { type: 'parcial', hash: await sha256(concat(meta, head, tail)) };
+  }
+  return fingerprint(await getBlobFor(it));
 }
 
 /* ---------- Imágenes y videos ---------- */
@@ -349,6 +371,41 @@ async function getBlobFor(it) {
   return it.src instanceof Blob ? it.src : (await fetch(it.url)).blob();
 }
 
+/* Miniatura del sistema si existe; si falla, el archivo completo. */
+async function getAnalysisBlob(it) {
+  if (it.thumbUrl) {
+    try {
+      const r = await fetch(it.thumbUrl);
+      if (r.ok) return { blob: await r.blob(), fromThumb: true };
+    } catch {}
+  }
+  return { blob: await getBlobFor(it), fromThumb: false };
+}
+
+const withTimeout = (promise, ms) => Promise.race([
+  promise,
+  new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), ms))
+]);
+
+async function analyzeItem(it, needHash) {
+  if (needHash) {
+    const fp = await fingerprintItem(it);
+    it.hash = fp.hash;
+    it.hashType = fp.type;
+  }
+  if (it.kind === 'image') {
+    const { blob, fromThumb } = await getAnalysisBlob(it);
+    const w0 = it.w, h0 = it.h;
+    await analyzeImage(it, blob);
+    // Con miniatura, las dimensiones reales vienen de MediaStore
+    if (fromThumb && w0 && h0) { it.w = w0; it.h = h0; }
+  } else if (it.kind === 'video') {
+    if (it.thumbUrl) it.thumb = it.thumbUrl;
+    // Con puente, la duración ya viene de MediaStore: no hace falta abrir el video
+    if (!it.duration) await analyzeVideo(it);
+  }
+}
+
 async function analyze(raw) {
   show('analysis');
   items = raw.map(r => ({
@@ -362,29 +419,23 @@ async function analyze(raw) {
   const sizeCount = new Map();
   for (const it of items) if (it.size > 0) sizeCount.set(it.size, (sizeCount.get(it.size) || 0) + 1);
 
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    try {
-      const needHash = it.size > 0 && sizeCount.get(it.size) > 1;
-      if (it.kind === 'image' || needHash) {
-        const blob = await getBlobFor(it);
-        if (needHash) {
-          const fp = await fingerprint(blob);
-          it.hash = fp.hash;
-          it.hashType = fp.type;
-        }
-        if (it.kind === 'image') await analyzeImage(it, blob);
-      } else if (it.kind === 'video') {
-        await analyzeVideo(it);
+  let next = 0, done = 0;
+  progress(0, items.length);
+  const worker = async () => {
+    while (next < items.length) {
+      const it = items[next++];
+      try {
+        const needHash = it.size > 0 && sizeCount.get(it.size) > 1;
+        await withTimeout(analyzeItem(it, needHash), CFG.ITEM_TIMEOUT_MS);
+      } catch {
+        it.error = true;
       }
-    } catch {
-      it.error = true;
+      done++;
+      progress(done, items.length);
+      if (done % 20 === 0) await tick();
     }
-    if (i % 5 === 4 || i === items.length - 1) {
-      progress(i + 1, items.length);
-      await tick();
-    }
-  }
+  };
+  await Promise.all(Array.from({ length: Math.min(CFG.WORKERS, items.length) }, worker));
   tab = 'dup';
   buildGroups();
   show('results');

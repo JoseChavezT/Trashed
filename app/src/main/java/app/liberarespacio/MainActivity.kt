@@ -3,12 +3,14 @@ package app.liberarespacio
 import android.Manifest
 import android.content.ContentUris
 import android.content.pm.PackageManager
+import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
+import android.util.Size
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -21,6 +23,10 @@ import androidx.core.content.ContextCompat
 import androidx.webkit.WebViewAssetLoader
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import java.io.FileInputStream
+import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -36,6 +42,8 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val DOMAIN = "appassets.androidplatform.net"
+        private const val THUMB_SIZE = 256
+        private const val MAX_PART_BYTES = 8 * 1024 * 1024
         private const val VISUAL_USER_SELECTED = "android.permission.READ_MEDIA_VISUAL_USER_SELECTED"
     }
 
@@ -77,6 +85,8 @@ class MainActivity : ComponentActivity() {
             .setDomain(DOMAIN)
             .addPathHandler("/assets/", WebViewAssetLoader.AssetsPathHandler(this))
             .addPathHandler("/media/", MediaPathHandler())
+            .addPathHandler("/thumb/", ThumbPathHandler())
+            .addPathHandler("/part/", PartPathHandler())
             .build()
 
         webView = WebView(this).apply {
@@ -202,6 +212,7 @@ class MainActivity : ComponentActivity() {
                     put("height", c.getInt(hCol))
                     if (isVideo) put("duration", c.getLong(durCol) / 1000.0) // MediaStore usa milisegundos
                     put("url", "https://$DOMAIN/media/$key")
+                    put("thumb", "https://$DOMAIN/thumb/$key")
                 })
             }
         }
@@ -218,6 +229,54 @@ class MainActivity : ComponentActivity() {
                     null,
                     stream
                 )
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    /** Miniatura JPEG generada por Android (también decodifica HEIC y videos). */
+    private inner class ThumbPathHandler : WebViewAssetLoader.PathHandler {
+        override fun handle(path: String): WebResourceResponse? {
+            val uri = knownUris[path] ?: return null
+            return try {
+                val bmp = contentResolver.loadThumbnail(uri, Size(THUMB_SIZE, THUMB_SIZE), null)
+                val out = ByteArrayOutputStream()
+                bmp.compress(Bitmap.CompressFormat.JPEG, 85, out)
+                bmp.recycle()
+                WebResourceResponse("image/jpeg", null, ByteArrayInputStream(out.toByteArray()))
+            } catch (e: Exception) {
+                null
+            }
+        }
+    }
+
+    /**
+     * Un tramo del archivo: /part/<id>/<inicio>/<largo>. Sirve para la huella parcial de
+     * archivos grandes sin leerlos completos (el WebView no envía cabeceras Range aquí).
+     */
+    private inner class PartPathHandler : WebViewAssetLoader.PathHandler {
+        override fun handle(path: String): WebResourceResponse? {
+            val parts = path.split('/')
+            if (parts.size != 3) return null
+            val uri = knownUris[parts[0]] ?: return null
+            val start = parts[1].toLongOrNull() ?: return null
+            val length = parts[2].toIntOrNull() ?: return null
+            if (start < 0 || length < 0 || length > MAX_PART_BYTES) return null
+            return try {
+                val bytes = contentResolver.openFileDescriptor(uri, "r")?.use { pfd ->
+                    FileInputStream(pfd.fileDescriptor).channel.use { ch ->
+                        val buf = ByteBuffer.allocate(length)
+                        var pos = start
+                        while (buf.hasRemaining()) {
+                            val n = ch.read(buf, pos)
+                            if (n <= 0) break
+                            pos += n
+                        }
+                        buf.array().copyOf(buf.position())
+                    }
+                } ?: return null
+                WebResourceResponse("application/octet-stream", null, ByteArrayInputStream(bytes))
             } catch (e: Exception) {
                 null
             }

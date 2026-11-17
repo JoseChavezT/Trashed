@@ -32,11 +32,13 @@ mediante un puente nativo (`AndroidStorage` → `window.StorageBridge`).
 ## Limitaciones conocidas
 
 - Solo fotos y videos. Los archivos generales (PDF, APK, ZIP) no se leen en esta versión.
-- Los videos se leen por HTTP sin soporte de rangos. La duración puede no cargarse en algunos
-  dispositivos, y el análisis de cada video tiene un límite de 8 segundos.
-  Si el seek falla, la solución propuesta es responder a `Range` en `MediaPathHandler`
-  (206 Partial Content con `Content-Range`, usando `openAssetFileDescriptor` y `skip`),
-  o reproducir el video con un `content://` vía un reproductor nativo.
+- Miniaturas: el nativo sirve `/thumb/<id>` con `ContentResolver.loadThumbnail` (256 px). Se usan
+  para la vista previa, dHash y nitidez (también decodifica HEIC). Si fallan, se usa el archivo completo.
+- Videos: la duración viene de MediaStore y no se abre el video. El servidor interno no soporta
+  rangos HTTP; si alguna vez se reproduce el video dentro de la app y el seek falla, la solución
+  es responder `206 Partial Content` en `MediaPathHandler`.
+- Huella parcial (> 64 MB): se leen solo el inicio y el final con `/part/<id>/<inicio>/<largo>`.
+- Análisis: 4 elementos a la vez; un elemento que tarda más de 30 s se marca con aviso y se sigue.
 - Los umbrales de `index.html` (`BLUR_MAX`, `SIM_MAX_DIST`) son de partida. Calíbralos con tus fotos.
 - HEIC: si el WebView no lo decodifica, el elemento aparece sin vista previa y marcado con error.
 - Todavía no se ha compilado: el entorno de trabajo no pudo instalar el Android SDK.
