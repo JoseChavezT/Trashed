@@ -29,6 +29,20 @@ mediante un puente nativo (`AndroidStorage` → `window.StorageBridge`).
 3. Marca elementos y confirma. Deben ir a la papelera del sistema (Fotos > Papelera).
 4. Si eliges solo algunas fotos (Android 14+), la app solo verá esas.
 
+## WhatsApp y miniaturas
+
+- Categoría **WhatsApp** en Limpiar: archivos bajo `.../WhatsApp/Media/` (también Business).
+  Filtros: recibidos / enviados (subcarpeta `Sent/`) y antigüedad (+1 mes … +1 año), con
+  «Seleccionar todos». WhatsApp no guarda en el archivo de qué chat viene, así que no se puede
+  filtrar por contacto: para eso, WhatsApp > Ajustes > Almacenamiento y datos > Administrar almacenamiento.
+- Categoría **Miniaturas** en Limpiar: archivos visibles en la galería dentro de carpetas `thumb`,
+  `thumbs`, `thumbnails` (con o sin punto). Van a la papelera como el resto.
+- Tarjeta **Miniaturas** en el inicio: carpetas ocultas (p. ej. `DCIM/.thumbnails`) que no están en
+  MediaStore. El usuario elige una carpeta con el selector del sistema (`OpenDocumentTree`,
+  empieza en DCIM); la app busca carpetas de miniaturas hasta 4 niveles y borra su contenido con
+  `DocumentsContract.deleteDocument`. Borrado definitivo (son cachés regenerables). El permiso de
+  la carpeta se guarda para no volver a pedirla.
+
 ## Comprimir
 
 Apartado en la pantalla de inicio. Opciones antes de buscar: qué comprimir (fotos / fotos y videos),

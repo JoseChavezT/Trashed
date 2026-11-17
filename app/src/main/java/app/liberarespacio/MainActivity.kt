@@ -2,6 +2,7 @@ package app.liberarespacio
 
 import android.Manifest
 import android.content.ContentUris
+import android.content.Intent
 import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -10,6 +11,7 @@ import android.graphics.drawable.ColorDrawable
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.DocumentsContract
 import android.provider.MediaStore
 import android.util.Size
 import android.view.WindowManager
@@ -90,6 +92,26 @@ class MainActivity : ComponentActivity() {
         val next = pendingLocation ?: return@registerForActivityResult
         pendingLocation = null
         next()
+    }
+
+    /* Miniaturas: carpeta elegida por el usuario con el selector del sistema. */
+    private var pendingTreeCallId: String? = null
+
+    private val treeLauncher = registerForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri ->
+        val callId = pendingTreeCallId ?: return@registerForActivityResult
+        pendingTreeCallId = null
+        if (uri == null) {
+            respond(callId, false, "No se eligió ninguna carpeta")
+            return@registerForActivityResult
+        }
+        runCatching {
+            contentResolver.takePersistableUriPermission(
+                uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+        }
+        Thread { thumbScan(callId, uri) }.start()
     }
 
     private val trashLauncher = registerForActivityResult(
@@ -215,9 +237,66 @@ class MainActivity : ComponentActivity() {
             }.start()
         }
 
+        /** Abre el selector de carpetas (empieza en DCIM) y busca carpetas de miniaturas. */
+        @JavascriptInterface
+        fun pickThumbs(callId: String) {
+            runOnUiThread {
+                if (pendingTreeCallId != null) {
+                    respond(callId, false, "Ya hay un selector abierto")
+                    return@runOnUiThread
+                }
+                pendingTreeCallId = callId
+                val dcim = DocumentsContract.buildDocumentUri("com.android.externalstorage.documents", "primary:DCIM")
+                try {
+                    treeLauncher.launch(dcim)
+                } catch (e: Exception) {
+                    pendingTreeCallId = null
+                    respond(callId, false, "No se pudo abrir el selector de carpetas")
+                }
+            }
+        }
+
+        /** Vuelve a buscar en una carpeta elegida antes (si el permiso sigue vigente). */
+        @JavascriptInterface
+        fun scanThumbs(callId: String, treeUri: String) {
+            val uri = grantedTree(treeUri) ?: return respond(callId, false, "Sin permiso para esa carpeta")
+            Thread { thumbScan(callId, uri) }.start()
+        }
+
+        @JavascriptInterface
+        fun deleteThumbs(callId: String, treeUri: String) {
+            val uri = grantedTree(treeUri) ?: return respond(callId, false, "Sin permiso para esa carpeta")
+            Thread {
+                try {
+                    val res = ThumbCleaner(this@MainActivity, uri).delete { done, total ->
+                        progressTo(callId, JSONObject().put("done", done).put("total", total).toString())
+                    }
+                    respond(callId, true, res.toString())
+                } catch (e: Exception) {
+                    respond(callId, false, "No se pudieron borrar: ${e.message}")
+                }
+            }.start()
+        }
+
         @JavascriptInterface
         fun cancelCompress() {
             compressor?.cancel()
+        }
+    }
+
+    /* ---------- Miniaturas ---------- */
+
+    private fun grantedTree(treeUri: String): Uri? {
+        val uri = runCatching { Uri.parse(treeUri) }.getOrNull() ?: return null
+        val ok = contentResolver.persistedUriPermissions.any { it.uri == uri && it.isWritePermission }
+        return if (ok) uri else null
+    }
+
+    private fun thumbScan(callId: String, uri: Uri) {
+        try {
+            respond(callId, true, ThumbCleaner(this, uri).scan().toString())
+        } catch (e: Exception) {
+            respond(callId, false, "No se pudo revisar la carpeta: ${e.message}")
         }
     }
 

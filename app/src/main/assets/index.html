@@ -79,7 +79,8 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
 .opt{margin:16px 0 0}
 .opt>span{display:block;margin-bottom:6px}
 .seg{display:flex;gap:3px;padding:3px;background:var(--surface-2);border-radius:12px}
-.seg button{flex:1;min-height:40px;border-radius:9px;font-size:14px;color:var(--muted)}
+.seg button{flex:1;min-width:0;min-height:40px;padding:0 4px;border-radius:9px;font-size:14px;color:var(--muted);white-space:nowrap}
+.seg.tight button{font-size:13px}
 .seg button[aria-checked="true"]{background:var(--text);color:#000;font-weight:600}
 .reasons{margin:12px 0 0;padding:0;list-style:none}
 .reasons li{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
@@ -99,6 +100,13 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
         <p class="muted" id="startNote" style="margin:0 0 14px"></p>
         <button class="btn block" id="btnStart">Empezar</button>
         <p class="muted small" style="margin:14px 0 0">Todo se analiza en este dispositivo. Nada se sube a internet.</p>
+      </div>
+      <div class="card" id="thumbCard" hidden>
+        <h2>Miniaturas</h2>
+        <p class="muted" style="margin:0 0 14px">Borra carpetas ocultas de miniaturas, como DCIM/.thumbnails. Son copias pequeñas que Android vuelve a crear cuando hacen falta.</p>
+        <div id="thumbResult"></div>
+        <button class="btn block" id="btnThumbFind">Buscar miniaturas</button>
+        <p class="muted small" id="thumbHint" style="margin:12px 0 0">Android te pedirá elegir una carpeta: entra en DCIM (o la carpeta que quieras revisar) y toca «Usar esta carpeta».</p>
       </div>
       <div class="card" id="compCard" hidden>
         <h2>Comprimir</h2>
@@ -214,6 +222,11 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
     window.StorageBridge.analyze = (jobs, cfg, onProgress) =>
       call('analyze', [JSON.stringify(jobs), JSON.stringify(cfg)], onProgress).then(JSON.parse);
   }
+  if (typeof A.pickThumbs === 'function') {
+    window.StorageBridge.pickThumbs = () => call('pickThumbs', []).then(JSON.parse);
+    window.StorageBridge.scanThumbs = tree => call('scanThumbs', [tree]).then(JSON.parse);
+    window.StorageBridge.deleteThumbs = (tree, onProgress) => call('deleteThumbs', [tree], onProgress).then(JSON.parse);
+  }
   if (typeof A.compress === 'function') {
     window.StorageBridge.compress = (ids, opts, onProgress) =>
       call('compress', [JSON.stringify(ids), JSON.stringify(opts)], onProgress).then(JSON.parse);
@@ -251,16 +264,36 @@ const CFG = {
   SCREENSHOT_RE: /screen[\s_-]?shot|captura|pantalla/i
 };
 
-const LABEL = { dup: 'Duplicados', sim: 'Similares', blur: 'Borrosas', shot: 'Capturas', big: 'Grandes', all: 'Todos' };
+const LABEL = { dup: 'Duplicados', sim: 'Similares', blur: 'Borrosas', shot: 'Capturas', big: 'Grandes', wa: 'WhatsApp', thumbs: 'Miniaturas', all: 'Todos' };
 const EMPTY = {
   dup: 'No se encontraron copias idénticas.',
   sim: 'No se encontraron fotos parecidas.',
   blur: 'No hay fotos borrosas.',
   shot: 'No hay capturas de pantalla.',
   big: 'No hay archivos grandes.',
+  wa: 'No hay fotos ni videos de WhatsApp con este filtro.',
+  thumbs: 'No hay miniaturas visibles en la galería. Las carpetas ocultas (.thumbnails) se borran desde el inicio.',
   all: 'No hay elementos.'
 };
+/* WhatsApp guarda los medios en .../WhatsApp/Media/<tipo>/ y lo enviado en la subcarpeta Sent/. */
+const WA_RE = /(^|\/)WhatsApp( Business)?\/Media\//i;
+const isWA = it => WA_RE.test(it.path || '');
+const waSent = it => /\/Sent(\/|$)/i.test(it.path || '');
+const THUMB_RE = /(^|\/)\.?thumb(nail)?s?(\/|$)/i;
+const isThumbPath = it => THUMB_RE.test(it.path || '');
+const WA_AGES = [['0', 'Todo'], ['30', '+1 mes'], ['90', '+3 m'], ['180', '+6 m'], ['365', '+1 año']];
+const waOpts = { dir: 'all', age: '0' };
+function waMatch(it) {
+  if (!isWA(it)) return false;
+  if (waOpts.dir === 'in' && waSent(it)) return false;
+  if (waOpts.dir === 'out' && !waSent(it)) return false;
+  const days = Number(waOpts.age);
+  return !days || (it.date && it.date < Date.now() - days * 864e5);
+}
+
 const FLAT = {
+  wa: { filter: waMatch, sort: (a, b) => a.date - b.date },
+  thumbs: { filter: isThumbPath, sort: (a, b) => b.size - a.size },
   blur: { filter: it => it.blurry, sort: (a, b) => a.blur - b.blur },
   shot: { filter: it => it.shot, sort: (a, b) => b.date - a.date },
   big:  { filter: it => it.large, sort: (a, b) => b.size - a.size },
@@ -676,8 +709,8 @@ function renderSummary() {
   const defs = [
     ['dup', groups.dup.length, 'grupos', extraBytes(groups.dup)],
     ['sim', groups.sim.length, 'grupos', extraBytes(groups.sim)],
-    ...['blur', 'shot', 'big', 'all'].map(k => {
-      const arr = items.filter(FLAT[k].filter);
+    ...['blur', 'shot', 'big', 'wa', 'thumbs', 'all'].map(k => {
+      const arr = items.filter(k === 'wa' ? isWA : FLAT[k].filter);
       return [k, arr.length, 'elementos', bytesOf(arr)];
     })
   ];
@@ -708,9 +741,25 @@ function renderList() {
   }
   const f = FLAT[tab];
   const arr = items.filter(f.filter).sort(f.sort);
-  el.innerHTML = arr.length
+  const head = tab === 'wa' ? waHeadHTML(arr) : '';
+  el.innerHTML = head + (arr.length
     ? `<div class="list card">${arr.map(it => rowHTML(it, false)).join('')}</div>`
-    : `<p class="muted empty">${EMPTY[tab]}</p>`;
+    : `<p class="muted empty">${EMPTY[tab]}</p>`);
+}
+
+function waHeadHTML(arr) {
+  const seg = (key, opts) => `<div class="seg${opts.length > 3 ? ' tight' : ''}" role="radiogroup" data-wa="${key}">${opts.map(([v, t]) =>
+    `<button role="radio" data-v="${v}" aria-checked="${waOpts[key] === v}">${t}</button>`).join('')}</div>`;
+  const allOn = arr.length && arr.every(it => selected.has(it.id));
+  return `<div class="card" style="margin-bottom:12px">
+    <p class="muted small" style="margin:0">WhatsApp no indica de qué chat es cada archivo. Filtra por enviados o recibidos y por antigüedad. Más antiguos primero.</p>
+    <div class="opt">${seg('dir', [['all', 'Todos'], ['in', 'Recibidos'], ['out', 'Enviados']])}</div>
+    <div class="opt"><span class="muted small">Antigüedad</span>${seg('age', WA_AGES)}</div>
+    <div class="ghead" style="padding:14px 0 0">
+      <span>${arr.length} archivo(s) · ${fmtSize(bytesOf(arr))}</span>
+      ${arr.length ? `<button class="btn ghost sm" data-waall>${allOn ? 'Quitar selección' : 'Seleccionar todos'}</button>` : ''}
+    </div>
+  </div>`;
 }
 
 function groupHTML(g) {
@@ -904,6 +953,20 @@ $('#summary').addEventListener('click', e => {
 });
 
 $('#list').addEventListener('click', e => {
+  const waBtn = e.target.closest('[data-wa] button');
+  if (waBtn) {
+    waOpts[waBtn.closest('[data-wa]').dataset.wa] = waBtn.dataset.v;
+    renderList();
+    return;
+  }
+  if (e.target.closest('[data-waall]')) {
+    const arr = items.filter(waMatch);
+    const allOn = arr.every(it => selected.has(it.id));
+    for (const it of arr) { if (allOn) selected.delete(it.id); else selected.add(it.id); }
+    renderList();
+    renderBar();
+    return;
+  }
   const chk = e.target.closest('[data-check]');
   if (chk) return toggle(chk.dataset.check);
   const open = e.target.closest('[data-open]');
@@ -1162,6 +1225,72 @@ $('#viewCompDone').addEventListener('click', e => {
   if (e.target.closest('#btnCompBack')) show('start');
 });
 
+/* ---------- Carpetas de miniaturas ---------- */
+let thumbScan = null;
+const getSaved = k => { try { return localStorage.getItem(k); } catch { return null; } };
+const setSaved = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+
+function renderThumbs() {
+  const el = $('#thumbResult');
+  const btn = $('#btnThumbFind');
+  if (!thumbScan) { el.innerHTML = ''; btn.textContent = 'Buscar miniaturas'; return; }
+  const r = thumbScan;
+  el.innerHTML = r.files
+    ? `<div class="big">${esc(fmtSize(r.bytes))}</div>
+       <p class="muted small" style="margin:0 0 6px">${r.files} archivo(s) en ${esc(r.root)}</p>
+       <ul class="reasons" style="margin:0 0 14px">${r.folders.map(f =>
+         `<li><span>${esc(f.path)}</span><span class="muted">${f.files} · ${esc(fmtSize(f.bytes))}</span></li>`).join('')}</ul>
+       <button class="btn danger block" id="btnThumbDelete" style="margin-bottom:10px">Borrar ${r.files} archivo(s)</button>`
+    : `<p class="muted" style="margin:0 0 14px">No se encontraron carpetas de miniaturas en ${esc(r.root)}.</p>`;
+  btn.textContent = 'Elegir otra carpeta';
+  btn.classList.toggle('ghost', !!r.files);
+}
+
+async function thumbFind(pick) {
+  const saved = getSaved('thumbTree');
+  try {
+    if (!pick && saved) {
+      try { thumbScan = await bridge.scanThumbs(saved); }
+      catch { thumbScan = await bridge.pickThumbs(); }
+    } else {
+      thumbScan = await bridge.pickThumbs();
+    }
+    setSaved('thumbTree', thumbScan.tree);
+  } catch (e) {
+    if (e && e.message) toast(e.message);
+    return;
+  }
+  renderThumbs();
+}
+
+async function thumbDelete() {
+  const r = thumbScan;
+  show('analysis');
+  $('#progressText').textContent = 'Borrando miniaturas…';
+  $('#progressBar').style.width = '0%';
+  try {
+    const res = await bridge.deleteThumbs(r.tree, p => {
+      $('#progressText').textContent = `Borrando ${p.done} de ${p.total}`;
+      $('#progressBar').style.width = (p.total ? p.done / p.total * 100 : 100) + '%';
+    });
+    toast(`${res.deleted} miniatura(s) borradas · ${fmtSize(res.bytes)} liberados` + (res.failed ? ` · ${res.failed} no se pudieron borrar` : ''));
+  } catch (e) {
+    toast(e && e.message ? e.message : 'No se pudieron borrar.');
+  }
+  try { thumbScan = await bridge.scanThumbs(r.tree); } catch { thumbScan = null; }
+  show('start');
+  renderThumbs();
+}
+
+$('#btnThumbFind').addEventListener('click', () => thumbFind(!!thumbScan));
+$('#thumbResult').addEventListener('click', e => {
+  if (!e.target.closest('#btnThumbDelete')) return;
+  $('#confirmText').textContent = `Se borrarán definitivamente ${thumbScan.files} miniatura(s) (${fmtSize(thumbScan.bytes)}). No van a la papelera, pero Android las vuelve a crear cuando hacen falta. Tus fotos no se tocan.`;
+  $('#confirmYes').textContent = 'Borrar';
+  confirmAction = thumbDelete;
+  $('#confirm').showModal();
+});
+
 /* ---------- Inicio ---------- */
 function init() {
   $('#btnStart').textContent = bridge ? 'Analizar galería' : 'Elegir archivos';
@@ -1170,6 +1299,7 @@ function init() {
     : 'Elige fotos, videos o archivos para buscar duplicados y fotos parecidas. En navegador no se borra nada del disco.';
   const canCompress = !!(bridge && typeof bridge.compress === 'function');
   $('#compCard').hidden = !canCompress;
+  $('#thumbCard').hidden = !(bridge && typeof bridge.pickThumbs === 'function');
   $('#cleanTitle').hidden = !canCompress;
   if (canCompress) renderCompOpts();
   if (!window.crypto || !crypto.subtle) {
