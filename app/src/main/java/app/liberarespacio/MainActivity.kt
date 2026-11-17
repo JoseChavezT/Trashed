@@ -2,6 +2,7 @@ package app.liberarespacio
 
 import android.Manifest
 import android.content.ContentUris
+import android.content.IntentSender
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Color
@@ -11,6 +12,7 @@ import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Size
+import android.view.WindowManager
 import android.webkit.JavascriptInterface
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
@@ -28,6 +30,7 @@ import java.io.ByteArrayOutputStream
 import java.io.FileInputStream
 import java.nio.ByteBuffer
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.CountDownLatch
 
 /**
  * Muestra assets/index.html en un WebView y expone AndroidStorage al JavaScript.
@@ -66,6 +69,27 @@ class MainActivity : ComponentActivity() {
         } else {
             respond(callId, false, "Permiso denegado para leer fotos y videos")
         }
+    }
+
+    /* Compresión: un solo trabajo a la vez. */
+    @Volatile private var compressor: Compressor? = null
+    private var pendingConsent: ((Boolean) -> Unit)? = null
+    private var pendingLocation: (() -> Unit)? = null
+
+    private val consentLauncher = registerForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        val cb = pendingConsent ?: return@registerForActivityResult
+        pendingConsent = null
+        cb(result.resultCode == RESULT_OK)
+    }
+
+    private val locationLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {
+        val next = pendingLocation ?: return@registerForActivityResult
+        pendingLocation = null
+        next()
     }
 
     private val trashLauncher = registerForActivityResult(
@@ -134,6 +158,94 @@ class MainActivity : ComponentActivity() {
             }
             runOnUiThread { requestTrash(callId, ids) }
         }
+
+        /** optsJson: {"quality": 85|75, "overwrite": true|false}. Progreso por window.__storageProgress. */
+        @JavascriptInterface
+        fun compress(callId: String, idsJson: String, optsJson: String) {
+            val ids: List<String>
+            val opts: Compressor.Options
+            try {
+                ids = JSONArray(idsJson).let { arr -> List(arr.length()) { arr.getString(it) } }
+                val o = JSONObject(optsJson)
+                opts = Compressor.Options(
+                    quality = o.optInt("quality", 85).coerceIn(50, 95),
+                    overwrite = o.optBoolean("overwrite", false)
+                )
+            } catch (e: Exception) {
+                respond(callId, false, "Opciones no válidas")
+                return
+            }
+            runOnUiThread {
+                if (compressor != null || pendingLocation != null) {
+                    respond(callId, false, "Ya hay una compresión en curso")
+                    return@runOnUiThread
+                }
+                // Sin este permiso, Android borra la ubicación al leer las fotos y videos
+                pendingLocation = { startCompress(callId, ids, opts) }
+                if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ACCESS_MEDIA_LOCATION)
+                    == PackageManager.PERMISSION_GRANTED
+                ) {
+                    pendingLocation = null
+                    startCompress(callId, ids, opts)
+                } else {
+                    locationLauncher.launch(Manifest.permission.ACCESS_MEDIA_LOCATION)
+                }
+            }
+        }
+
+        @JavascriptInterface
+        fun cancelCompress() {
+            compressor?.cancel()
+        }
+    }
+
+    /* ---------- Compresión ---------- */
+
+    private fun startCompress(callId: String, ids: List<String>, opts: Compressor.Options) {
+        val c = Compressor(
+            context = this,
+            uriFor = { knownUris[it] },
+            askConsent = ::askConsentBlocking,
+            progress = { progressTo(callId, it.toString()) }
+        )
+        compressor = c
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        Thread {
+            try {
+                respond(callId, true, c.run(ids, opts).toString())
+            } catch (e: Exception) {
+                respond(callId, false, "No se pudo comprimir: ${e.message}")
+            } finally {
+                compressor = null
+                runOnUiThread { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+            }
+        }.start()
+    }
+
+    /** Llamado desde el hilo de fondo: muestra la confirmación del sistema y espera la respuesta. */
+    private fun askConsentBlocking(sender: IntentSender): Boolean {
+        val latch = CountDownLatch(1)
+        var granted = false
+        runOnUiThread {
+            pendingConsent = { ok -> granted = ok; latch.countDown() }
+            try {
+                consentLauncher.launch(IntentSenderRequest.Builder(sender).build())
+            } catch (e: Exception) {
+                pendingConsent = null
+                latch.countDown()
+            }
+        }
+        latch.await()
+        return granted
+    }
+
+    private fun progressTo(callId: String, payload: String) {
+        runOnUiThread {
+            webView.evaluateJavascript(
+                "window.__storageProgress && window.__storageProgress(${JSONObject.quote(callId)}, ${JSONObject.quote(payload)})",
+                null
+            )
+        }
     }
 
     /* ---------- Permisos ---------- */
@@ -178,7 +290,8 @@ class MainActivity : ComponentActivity() {
             MediaStore.MediaColumns.MIME_TYPE,
             MediaStore.MediaColumns.DATE_MODIFIED,
             MediaStore.MediaColumns.WIDTH,
-            MediaStore.MediaColumns.HEIGHT
+            MediaStore.MediaColumns.HEIGHT,
+            MediaStore.MediaColumns.RELATIVE_PATH
         )
         if (isVideo) projection.add(MediaStore.Video.VideoColumns.DURATION)
 
@@ -196,6 +309,7 @@ class MainActivity : ComponentActivity() {
             val dateCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.DATE_MODIFIED)
             val wCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.WIDTH)
             val hCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.HEIGHT)
+            val pathCol = c.getColumnIndexOrThrow(MediaStore.MediaColumns.RELATIVE_PATH)
             val durCol = if (isVideo) c.getColumnIndexOrThrow(MediaStore.Video.VideoColumns.DURATION) else -1
 
             while (c.moveToNext()) {
@@ -213,6 +327,7 @@ class MainActivity : ComponentActivity() {
                     if (isVideo) put("duration", c.getLong(durCol) / 1000.0) // MediaStore usa milisegundos
                     put("url", "https://$DOMAIN/media/$key")
                     put("thumb", "https://$DOMAIN/thumb/$key")
+                    put("path", c.getString(pathCol) ?: "")
                 })
             }
         }

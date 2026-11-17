@@ -29,6 +29,27 @@ mediante un puente nativo (`AndroidStorage` → `window.StorageBridge`).
 3. Marca elementos y confirma. Deben ir a la papelera del sistema (Fotos > Papelera).
 4. Si eliges solo algunas fotos (Android 14+), la app solo verá esas.
 
+## Comprimir
+
+Apartado en la pantalla de inicio. Opciones antes de buscar: qué comprimir (fotos / fotos y videos),
+qué hacer con el original (papelera / sobrescribir) y calidad (alta 85% / media 75%).
+
+- Fotos: solo JPG. Se vuelven a codificar con la calidad elegida y se copia el EXIF (fecha de
+  captura, orientación, cámara, ubicación). Se omiten fotos en movimiento y Ultra HDR.
+- Videos: solo MP4. Media3 Transformer a H.265 (con respaldo), lado corto máximo 1080 px y
+  ~10 Mb/s (alta) o ~6 Mb/s (media) a 1080p. Se escribe la fecha de grabación original.
+- Papelera: crea el archivo nuevo en la misma carpeta, manda el original a la papelera y publica
+  el nuevo con el mismo nombre. Solo en DCIM, Pictures y Movies (Android no permite crear en otras).
+- Sobrescribir: pide permiso de escritura (`createWriteRequest`) y reemplaza el contenido.
+- La fecha de modificación del archivo se intenta conservar; algunos teléfonos no lo permiten.
+- Pide `ACCESS_MEDIA_LOCATION`: sin él, Android borra la ubicación al leer los archivos.
+- Si el archivo comprimido no baja al menos un 10%, no se toca.
+
+Puente: `compress(ids, {quality, overwrite}, onProgress)` →
+`{done: [{id, before, after}], skipped: [{id, reason}], cancelled, datesKept, locationKept}`.
+Progreso: `window.__storageProgress(callId, {phase, index, total, name, percent})`.
+`listMedia` añade `thumb` y `path` (RELATIVE_PATH).
+
 ## Limitaciones conocidas
 
 - Solo fotos y videos. Los archivos generales (PDF, APK, ZIP) no se leen en esta versión.
