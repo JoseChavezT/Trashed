@@ -210,6 +210,10 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
     listMedia: () => call('listMedia', []).then(JSON.parse),
     trash: ids => call('trash', [JSON.stringify(ids)]).then(JSON.parse)
   };
+  if (typeof A.analyze === 'function') {
+    window.StorageBridge.analyze = (jobs, cfg, onProgress) =>
+      call('analyze', [JSON.stringify(jobs), JSON.stringify(cfg)], onProgress).then(JSON.parse);
+  }
   if (typeof A.compress === 'function') {
     window.StorageBridge.compress = (ids, opts, onProgress) =>
       call('compress', [JSON.stringify(ids), JSON.stringify(opts)], onProgress).then(JSON.parse);
@@ -480,6 +484,20 @@ async function analyze(raw) {
   const sizeCount = new Map();
   for (const it of items) if (it.size > 0) sizeCount.set(it.size, (sizeCount.get(it.size) || 0) + 1);
 
+  if (bridge && typeof bridge.analyze === 'function') {
+    try {
+      await analyzeNative(sizeCount);
+      tab = 'dup';
+      buildGroups();
+      show('results');
+      render();
+      return;
+    } catch {
+      toast('El análisis rápido falló; se usa el método anterior.');
+      for (const it of items) { it.error = false; it.thumb = null; }
+    }
+  }
+
   let next = 0, done = 0;
   progress(0, items.length);
   const worker = async () => {
@@ -501,6 +519,58 @@ async function analyze(raw) {
   buildGroups();
   show('results');
   render();
+}
+
+/* ---------- Análisis nativo (APK) con caché ---------- */
+/* Guarda dHash, nitidez y huella por archivo; si el tamaño y la fecha no cambian, no se recalcula. */
+const CACHE_KEY = 'featCache.v1';
+function loadCache() {
+  try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '{}') || {}; } catch { return {}; }
+}
+function saveCache(list) {
+  const c = {};
+  for (const it of list) {
+    if (it.error || (!it.dh && !it.hash)) continue;
+    c[it.id] = [it.size, it.date, it.dh ? it.dh.lo : null, it.dh ? it.dh.hi : null, it.blur, it.hash, it.hashType];
+  }
+  try { localStorage.setItem(CACHE_KEY, JSON.stringify(c)); } catch {}
+}
+
+async function analyzeNative(sizeCount) {
+  const cache = loadCache();
+  const jobs = [];
+  for (const it of items) {
+    it.thumb = it.thumbUrl;
+    const c = cache[it.id];
+    const valid = c && c[0] === it.size && c[1] === it.date;
+    const needHash = it.size > 0 && sizeCount.get(it.size) > 1;
+    let feat = false, hash = false;
+    if (it.kind === 'image') {
+      if (valid && c[2] != null) { it.dh = { lo: c[2], hi: c[3] }; it.blur = c[4]; } else feat = true;
+    }
+    if (needHash) {
+      if (valid && c[5]) { it.hash = c[5]; it.hashType = c[6]; } else hash = true;
+    }
+    if (feat || hash) jobs.push({ id: it.id, feat, hash, size: it.size });
+  }
+  const reused = items.length - jobs.length;
+  const label = (d, n) => {
+    $('#progressText').textContent = `Analizando ${d} de ${n}` + (reused ? ` · ${reused} ya analizados antes` : '');
+    $('#progressBar').style.width = (n ? (d / n) * 100 : 100) + '%';
+  };
+  label(0, jobs.length);
+  if (jobs.length) {
+    const res = await bridge.analyze(jobs, {
+      fullHashMax: CFG.FULL_HASH_MAX, partialChunk: CFG.PARTIAL_CHUNK, thumbPx: CFG.THUMB_PX
+    }, p => label(p.done, p.total));
+    for (const j of jobs) {
+      const it = byId.get(j.id), r = res[j.id];
+      if (!r || r.error) { it.error = true; continue; }
+      if (r.lo != null) { it.dh = { lo: r.lo >>> 0, hi: r.hi >>> 0 }; it.blur = r.blur; }
+      if (r.hash) { it.hash = r.hash; it.hashType = r.hashType; }
+    }
+  }
+  saveCache(items);
 }
 
 /* ---------- Grupos ---------- */

@@ -59,7 +59,10 @@ Progreso: `window.__storageProgress(callId, {phase, index, total, name, percent}
   rangos HTTP; si alguna vez se reproduce el video dentro de la app y el seek falla, la solución
   es responder `206 Partial Content` en `MediaPathHandler`.
 - Huella parcial (> 64 MB): se leen solo el inicio y el final con `/part/<id>/<inicio>/<largo>`.
-- Análisis: 4 elementos a la vez; un elemento que tarda más de 30 s se marca con aviso y se sigue.
+- Análisis en la APK: nativo (`Analyzer.kt`) con 2 a 6 hilos; mismo algoritmo que el JS (dHash 9x8,
+  varianza del Laplaciano 64x64 y SHA-256). Resultados en caché (`localStorage`, `featCache.v1`) por
+  id, tamaño y fecha: un nuevo análisis solo procesa archivos nuevos o cambiados. Si falla, se usa el JS.
+- Análisis en navegador: 4 elementos a la vez; si uno tarda más de 30 s se marca con aviso y se sigue.
 - Los umbrales de `index.html` (`BLUR_MAX`, `SIM_MAX_DIST`) son de partida. Calíbralos con tus fotos.
 - HEIC: si el WebView no lo decodifica, el elemento aparece sin vista previa y marcado con error.
 - Todavía no se ha compilado: el entorno de trabajo no pudo instalar el Android SDK.

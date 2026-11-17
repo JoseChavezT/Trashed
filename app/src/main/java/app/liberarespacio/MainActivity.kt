@@ -193,6 +193,28 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        /** jobsJson: [{id, feat, hash, size}]; cfgJson: {fullHashMax, partialChunk, thumbPx}. */
+        @JavascriptInterface
+        fun analyze(callId: String, jobsJson: String, cfgJson: String) {
+            Thread {
+                try {
+                    val jobs = JSONArray(jobsJson)
+                    val c = JSONObject(cfgJson)
+                    val cfg = Analyzer.Config(
+                        fullHashMax = c.getLong("fullHashMax"),
+                        partialChunk = c.getInt("partialChunk"),
+                        thumbPx = c.getInt("thumbPx")
+                    )
+                    val res = Analyzer(this@MainActivity, { knownUris[it] }) { done, total ->
+                        progressTo(callId, JSONObject().put("done", done).put("total", total).toString())
+                    }.run(jobs, cfg)
+                    respond(callId, true, res.toString())
+                } catch (e: Exception) {
+                    respond(callId, false, "No se pudo analizar: ${e.message}")
+                }
+            }.start()
+        }
+
         @JavascriptInterface
         fun cancelCompress() {
             compressor?.cancel()
