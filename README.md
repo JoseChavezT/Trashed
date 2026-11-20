@@ -70,6 +70,8 @@ qué hacer con el original (papelera / sobrescribir) y calidad (alta 85% / media
 - La fecha de modificación del archivo se intenta conservar; algunos teléfonos no lo permiten.
 - Pide `ACCESS_MEDIA_LOCATION`: sin él, Android borra la ubicación al leer los archivos.
 - Si el archivo comprimido no baja al menos un 10%, no se toca.
+- Orden (con fotos y videos): fotos primero, videos primero o mayor ahorro primero; dentro de
+  cada tipo, mayor ahorro primero. El compresor procesa los archivos en ese orden.
 
 Puente: `compress(ids, {quality, overwrite}, onProgress)` →
 `{done: [{id, before, after}], skipped: [{id, reason}], cancelled, datesKept, locationKept}`.

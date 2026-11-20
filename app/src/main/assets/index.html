@@ -145,6 +145,10 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
           <div class="seg" role="radiogroup" aria-labelledby="lblQuality" data-opt="quality">
             <button role="radio" data-v="85">Alta · 85%</button><button role="radio" data-v="75">Media · 75%</button>
           </div></div>
+        <div class="opt" id="orderOpt"><span class="muted small" id="lblOrder">Orden</span>
+          <div class="seg tight" role="radiogroup" aria-labelledby="lblOrder" data-opt="order">
+            <button role="radio" data-v="photos">Fotos primero</button><button role="radio" data-v="videos">Videos primero</button><button role="radio" data-v="saving">Mayor ahorro</button>
+          </div></div>
         <p class="muted small" id="compNote" style="margin:14px 0"></p>
         <button class="btn block" id="btnCompFind">Buscar archivos para comprimir</button>
       </div>
@@ -1291,7 +1295,7 @@ const COMP = {
   MIN_IMAGE: 300 * 1024
 };
 const COMP_DIRS = { image: ['dcim', 'pictures'], video: ['dcim', 'movies', 'pictures'] };
-const comp = { opts: { kind: 'photos', mode: 'trash', quality: '85' }, list: [], byId: new Map(), sel: new Set(), blocked: 0 };
+const comp = { opts: { kind: 'photos', mode: 'trash', quality: '85', order: 'photos' }, list: [], byId: new Map(), sel: new Set(), blocked: 0 };
 
 try {
   const saved = JSON.parse(localStorage.getItem('compOpts') || 'null');
@@ -1303,6 +1307,8 @@ function renderCompOpts() {
     const key = seg.dataset.opt;
     for (const b of seg.querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.v === comp.opts[key]));
   }
+  // El orden solo importa si hay fotos y videos
+  $('#orderOpt').hidden = comp.opts.kind !== 'all';
   $('#compNote').textContent = comp.opts.mode === 'trash'
     ? 'Se crea la versión comprimida y el original va a la papelera, donde puedes recuperarlo durante 30 días.'
     : 'El original se reemplaza por la versión comprimida. No se puede deshacer.';
@@ -1350,11 +1356,19 @@ async function compFind() {
     it.thumb = it.thumbUrl;
     comp.list.push(it);
   }
-  comp.list.sort((a, b) => (b.size - b.est) - (a.size - a.est));
+  sortComp();
   comp.byId = new Map(comp.list.map(it => [it.id, it]));
   comp.sel = new Set(comp.list.map(it => it.id));
   show('compList');
   renderComp();
+}
+
+/* Orden en que se comprimen (y se muestran): fotos o videos primero; dentro, mayor ahorro primero. */
+function sortComp() {
+  const saving = (a, b) => (b.size - b.est) - (a.size - a.est);
+  const rank = it => comp.opts.kind !== 'all' || comp.opts.order === 'saving' ? 0
+    : (it.kind === 'video') === (comp.opts.order === 'photos') ? 1 : 0;
+  comp.list.sort((a, b) => rank(a) - rank(b) || saving(a, b));
 }
 
 function compRowHTML(it) {
@@ -1373,7 +1387,8 @@ function renderComp() {
   const est = comp.list.reduce((a, it) => a + it.est, 0);
   const q = comp.opts.quality === '85' ? 'alta' : 'media';
   const what = comp.opts.kind === 'all' ? 'fotos y videos' : 'fotos';
-  const mode = comp.opts.mode === 'trash' ? 'original a la papelera' : 'sobrescribir';
+  const mode = (comp.opts.mode === 'trash' ? 'original a la papelera' : 'sobrescribir') + (comp.opts.kind === 'all'
+    ? ' · ' + { photos: 'fotos primero', videos: 'videos primero', saving: 'mayor ahorro primero' }[comp.opts.order] : '');
   $('#compSummary').innerHTML = `
     <span class="muted small">Ahorro estimado</span>
     <div class="big">~${esc(fmtSize(Math.max(0, total - est)))}</div>
