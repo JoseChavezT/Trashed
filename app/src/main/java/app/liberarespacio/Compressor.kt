@@ -62,7 +62,7 @@ class Compressor(
     private val askConsent: (IntentSender) -> Boolean,
     private val progress: (JSONObject) -> Unit,
 ) {
-    data class Options(val quality: Int, val overwrite: Boolean)
+    data class Options(val quality: Int, val overwrite: Boolean, val eco: Boolean = false)
 
     private class Skip(msg: String) : Exception(msg)
 
@@ -81,6 +81,7 @@ class Compressor(
     private val main = Handler(Looper.getMainLooper())
     private val done = JSONArray()
     private val skipped = JSONArray()
+    private val thermal = Thermal(context)
     private var datesKept = 0
 
     companion object {
@@ -116,6 +117,12 @@ class Compressor(
                 var batchBytes = 0L
                 while (index < ids.size && !cancelled && batch.size < BATCH_FILES && batchBytes < BATCH_BYTES) {
                     val id = ids[index++]
+                    thermal.coolDown({ cancelled }) { cooling, c ->
+                        progress(JSONObject().put("phase", if (cooling) "cool" else "compress").put("index", index)
+                            .put("total", ids.size).put("name", "").put("percent", -1).put("celsius", c ?: JSONObject.NULL))
+                    }
+                    if (cancelled) break
+                    if (opt.eco && index > 1) Thread.sleep(if (id.startsWith("v")) 5000L else 300L)
                     try {
                         val orig = readOriginal(id) ?: throw Skip("Ya no existe")
                         report("compress", index, ids.size, orig.name, -1)

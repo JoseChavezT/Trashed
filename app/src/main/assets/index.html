@@ -55,6 +55,8 @@ main{padding:4px 16px calc(var(--safe-b) + 140px)}
   border-radius:999px;background:var(--accent);color:#000}
 .check{width:28px;height:28px;flex:none;border-radius:50%;border:2px solid #3a3a3a;position:relative}
 .check[aria-checked="true"]{background:var(--accent);border-color:var(--accent)}
+.check[aria-checked="mixed"]{background:var(--surface-2);border-color:var(--accent)}
+.check[aria-checked="mixed"]::after{content:"";position:absolute;left:6px;top:11px;width:12px;height:2px;background:var(--accent)}
 .check[aria-checked="true"]::after{content:"";position:absolute;left:10px;top:5px;width:6px;height:11px;
   border:solid #000;border-width:0 2px 2px 0;transform:rotate(45deg)}
 .group{padding:12px;margin-bottom:12px}
@@ -84,6 +86,12 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
 .seg button{flex:1;min-width:0;min-height:40px;padding:0 4px;border-radius:9px;font-size:14px;color:var(--muted);white-space:nowrap}
 .seg.tight button{font-size:13px}
 .seg button[aria-checked="true"]{background:var(--text);color:#000;font-weight:600}
+.frow{display:flex;align-items:center;gap:6px;padding:4px 6px;border-radius:12px}
+.frow .fopen{flex:1;min-width:0;display:flex;align-items:center;gap:10px;text-align:left;padding:8px 0}
+.chev{width:28px;height:28px;flex:none;display:grid;place-items:center;color:var(--muted);border-radius:8px}
+.chev svg{transition:transform .15s ease}
+.chev[aria-expanded="true"] svg{transform:rotate(90deg)}
+.ficon{width:22px;height:22px;flex:none;color:var(--muted)}
 .reasons{margin:12px 0 0;padding:0;list-style:none}
 .reasons li{display:flex;justify-content:space-between;gap:12px;padding:8px 0;border-top:1px solid var(--line);font-size:14px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
@@ -97,6 +105,18 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
   </header>
   <main>
     <section class="stack" id="viewStart">
+      <div class="card" id="scopeCard" hidden>
+        <h2>Antes de empezar</h2>
+        <div class="ghead" style="padding:8px 0 0">
+          <span><span class="muted small">Carpetas</span><br><span id="scopeText">Todas</span></span>
+          <button class="btn ghost sm" id="btnScope">Elegir carpetas</button>
+        </div>
+        <div class="opt"><span class="muted small" id="lblPace">Ritmo</span>
+          <div class="seg" role="radiogroup" aria-labelledby="lblPace" id="paceSeg">
+            <button role="radio" data-v="fast">Rápido</button><button role="radio" data-v="cool">Fresco</button>
+          </div></div>
+        <p class="muted small" id="paceNote" style="margin:12px 0 0"></p>
+      </div>
       <div class="card">
         <h2 id="cleanTitle" hidden>Limpiar</h2>
         <p class="muted" id="startNote" style="margin:0 0 14px"></p>
@@ -145,6 +165,16 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
       <div id="compList"></div>
     </section>
     <section class="card" id="viewCompDone" hidden></section>
+    <section id="viewFolders" hidden>
+      <div class="card" style="margin-bottom:12px">
+        <p class="muted small" style="margin:0">Marca las carpetas que quieres revisar. Al marcar una carpeta se incluyen sus subcarpetas.</p>
+        <div class="ghead" style="padding:12px 0 0">
+          <span id="folderInfo"></span>
+          <span style="display:flex;gap:8px"><button class="btn ghost sm" id="btnFolderAll">Todas</button><button class="btn ghost sm" id="btnFolderNone">Ninguna</button></span>
+        </div>
+      </div>
+      <div class="card list" id="folderTree"></div>
+    </section>
     <section id="viewResults" hidden>
       <div class="summary" id="summary"></div>
       <div id="list"></div>
@@ -169,6 +199,13 @@ h2{margin:0 0 4px;font-size:17px;font-weight:600;letter-spacing:-.01em}
       <button class="btn ghost sm" id="btnCompAll">Ninguno</button>
       <button class="btn sm" id="btnCompGo">Comprimir</button>
     </div>
+  </div>
+</div>
+
+<div class="bar" id="fbar" hidden>
+  <div class="bar-in">
+    <div id="fbarInfo"></div>
+    <button class="btn sm" id="btnFolderDone">Listo</button>
   </div>
 </div>
 
@@ -599,8 +636,8 @@ async function analyzeNative(sizeCount) {
   label(0, jobs.length);
   if (jobs.length) {
     const res = await bridge.analyze(jobs, {
-      fullHashMax: CFG.FULL_HASH_MAX, partialChunk: CFG.PARTIAL_CHUNK, thumbPx: CFG.THUMB_PX
-    }, p => label(p.done, p.total));
+      fullHashMax: CFG.FULL_HASH_MAX, partialChunk: CFG.PARTIAL_CHUNK, thumbPx: CFG.THUMB_PX, eco: pace === 'cool'
+    }, p => p.cooling ? coolingText($('#progressText'), p.celsius) : label(p.done, p.total));
     for (const j of jobs) {
       const it = byId.get(j.id), r = res[j.id];
       if (!r || r.error) { it.error = true; continue; }
@@ -945,6 +982,8 @@ function show(view) {
   $('#viewCompRun').hidden = view !== 'compRun';
   $('#viewCompList').hidden = view !== 'compList';
   $('#viewCompDone').hidden = view !== 'compDone';
+  $('#viewFolders').hidden = view !== 'folders';
+  $('#fbar').hidden = view !== 'folders';
   $('#btnNew').hidden = !['results', 'compList', 'compDone'].includes(view);
   $('#btnNew').textContent = view === 'results' ? 'Nuevo análisis' : 'Inicio';
   if (view !== 'results') $('#bar').hidden = true;
@@ -967,7 +1006,14 @@ $('#btnStart').addEventListener('click', async () => {
     toast('No se pudo leer la galería. Revisa los permisos.');
     return;
   }
-  analyze(normalizeBridge(list));
+  const all = normalizeBridge(list);
+  const chosen = all.filter(inScope);
+  if (!chosen.length) {
+    show('start');
+    toast('No hay archivos en las carpetas elegidas.');
+    return;
+  }
+  analyze(chosen);
 });
 
 picker.addEventListener('change', () => {
@@ -1059,6 +1105,183 @@ $('#btnNew').addEventListener('click', () => {
   show('start');
 });
 
+/* ---------- Carpetas y ritmo ---------- */
+const normPath = p => (p || '').replace(/\/+$/, '');
+let scope = { all: true, folders: new Set() };
+let pace = 'fast';
+try {
+  const sc = JSON.parse(localStorage.getItem('scope') || 'null');
+  if (sc) scope = { all: !!sc.all, folders: new Set(sc.folders || []) };
+  pace = localStorage.getItem('pace') || 'fast';
+} catch {}
+const saveScope = () => { try { localStorage.setItem('scope', JSON.stringify({ all: scope.all, folders: [...scope.folders] })); } catch {} };
+const inScope = it => scope.all || scope.folders.has(normPath(it.path));
+
+function coolingText(el, c) {
+  el.textContent = 'Enfriando el teléfono' + (typeof c === 'number' ? ` (${Math.round(c)} °C)` : '') + '… Se reanuda solo.';
+}
+
+function renderPace() {
+  for (const b of $('#paceSeg').querySelectorAll('button')) b.setAttribute('aria-checked', String(b.dataset.v === pace));
+  $('#paceNote').textContent = pace === 'cool'
+    ? 'Usa menos núcleos y hace pausas cortas: tarda más, pero el teléfono se calienta menos.'
+    : 'Usa todos los núcleos. Si el teléfono se calienta, la app hace una pausa sola hasta que se enfríe.';
+}
+
+let tree = null;            // raíz del árbol de carpetas
+const expanded = new Set(['']);
+
+function buildTree(list) {
+  const root = { name: 'Almacenamiento', path: '', kids: new Map(), files: 0, bytes: 0, own: 0 };
+  for (const it of list) {
+    const path = normPath(it.path);
+    let node = root;
+    node.files++; node.bytes += it.size;
+    if (path) {
+      let acc = '';
+      for (const part of path.split('/')) {
+        acc = acc ? acc + '/' + part : part;
+        if (!node.kids.has(part)) node.kids.set(part, { name: part, path: acc, kids: new Map(), files: 0, bytes: 0, own: 0 });
+        node = node.kids.get(part);
+        node.files++; node.bytes += it.size;
+      }
+    }
+    node.own++;
+  }
+  return root;
+}
+
+/* Carpetas con archivos propios bajo un nodo (son las que se guardan en la selección). */
+function leafPaths(node, out = []) {
+  if (node.own) out.push(node.path);
+  for (const k of node.kids.values()) leafPaths(k, out);
+  return out;
+}
+function nodeState(node) {
+  if (scope.all) return 'true';
+  const leaves = leafPaths(node);
+  const on = leaves.filter(p => scope.folders.has(p)).length;
+  return on === 0 ? 'false' : on === leaves.length ? 'true' : 'mixed';
+}
+/* Une cadenas de una sola subcarpeta sin archivos propios: Android/media/com.whatsapp/... */
+function collapse(node) {
+  let n = node, label = node.name;
+  while (!n.own && n.kids.size === 1) {
+    n = [...n.kids.values()][0];
+    label += '/' + n.name;
+  }
+  return { node: n, label };
+}
+
+const ICON_FOLDER = '<svg class="ficon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+const ICON_CHEV = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m9 6 6 6-6 6"/></svg>';
+
+function folderRows(node, depth) {
+  const kids = [...node.kids.values()].sort((a, b) => b.bytes - a.bytes);
+  return kids.map(k => {
+    const { node: n, label: raw } = collapse(k);
+    const label = raw.replace(/^Android\/media\/com\.whatsapp(\.w4b)?\/WhatsApp( Business)?\/Media(\/|$)/, 'WhatsApp$2/')
+      .replace(/\/$/, '').split('/').join(' › ');
+    const hasKids = n.kids.size > 0;
+    const open = expanded.has(n.path);
+    const st = nodeState(n);
+    const meta = `${n.files} archivo(s) · ${fmtSize(n.bytes)}${n.own && hasKids ? ` · ${n.own} aquí` : ''}`;
+    return `<div class="frow" style="padding-left:${6 + depth * 18}px">
+        ${hasKids ? `<button class="chev" data-fexp="${esc(n.path)}" aria-expanded="${open}" aria-label="Abrir ${esc(label)}">${ICON_CHEV}</button>` : '<span class="chev"></span>'}
+        <button class="fopen" data-fexp="${esc(n.path)}">${ICON_FOLDER}<span class="info"><span class="name">${esc(label)}</span><span class="meta">${esc(meta)}</span></span></button>
+        <button class="check" role="checkbox" aria-checked="${st}" aria-label="Incluir ${esc(label)}" data-ftog="${esc(n.path)}"></button>
+      </div>` + (hasKids && open ? folderRows(n, depth + 1) : '');
+  }).join('');
+}
+
+function findNode(path, node = tree) {
+  if (node.path === path) return node;
+  for (const k of node.kids.values()) {
+    if (path === k.path || path.startsWith(k.path + '/')) return findNode(path, k);
+  }
+  return null;
+}
+
+function selectedCount() {
+  if (!scopeList.length) return null;
+  let files = 0, bytes = 0;
+  for (const it of scopeList) if (inScope(it)) { files++; bytes += it.size; }
+  return { files, bytes };
+}
+
+let scopeList = [];
+function renderFolders() {
+  $('#folderTree').innerHTML = tree && tree.files ? folderRows(tree, 0) : '<p class="muted empty">No hay carpetas con fotos o videos.</p>';
+  const c = selectedCount();
+  $('#folderInfo').textContent = c ? `${c.files} de ${tree.files} archivo(s)` : '';
+  $('#fbarInfo').innerHTML = c ? `<strong>${c.files}</strong> archivo(s) · ${esc(fmtSize(c.bytes))}` : '';
+  $('#btnFolderDone').disabled = c && !c.files;
+  $('#btnFolderDone').style.opacity = c && !c.files ? '.4' : '';
+}
+
+function renderScope() {
+  if (scope.all) { $('#scopeText').textContent = 'Todas'; return; }
+  const n = scope.folders.size;
+  const c = scopeList.length ? selectedCount() : null;
+  $('#scopeText').textContent = `${n} carpeta(s)` + (c ? ` · ${c.files} archivo(s)` : '');
+}
+
+async function openFolders() {
+  show('analysis');
+  $('#progressText').textContent = 'Leyendo carpetas…';
+  $('#progressBar').style.width = '0%';
+  try {
+    scopeList = normalizeBridge(await bridge.listMedia());
+  } catch {
+    show('start');
+    toast('No se pudo leer la galería. Revisa los permisos.');
+    return;
+  }
+  tree = buildTree(scopeList);
+  // Descarta carpetas guardadas que ya no existen
+  if (!scope.all) {
+    const exist = new Set(leafPaths(tree));
+    scope.folders = new Set([...scope.folders].filter(p => exist.has(p)));
+  }
+  show('folders');
+  renderFolders();
+}
+
+function toggleFolder(path) {
+  const node = findNode(path);
+  if (!node) return;
+  if (scope.all) { scope = { all: false, folders: new Set(leafPaths(tree)) }; }
+  const leaves = leafPaths(node);
+  const allOn = leaves.every(p => scope.folders.has(p));
+  for (const p of leaves) { if (allOn) scope.folders.delete(p); else scope.folders.add(p); }
+  if (leafPaths(tree).every(p => scope.folders.has(p))) scope = { all: true, folders: new Set() };
+  saveScope();
+  renderFolders();
+}
+
+$('#btnScope').addEventListener('click', openFolders);
+$('#paceSeg').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  pace = b.dataset.v;
+  try { localStorage.setItem('pace', pace); } catch {}
+  renderPace();
+});
+$('#folderTree').addEventListener('click', e => {
+  const t = e.target.closest('[data-ftog]');
+  if (t) return toggleFolder(t.dataset.ftog);
+  const x = e.target.closest('[data-fexp]');
+  if (x) {
+    const p = x.dataset.fexp;
+    const node = findNode(p);
+    if (node && node.kids.size) { if (expanded.has(p)) expanded.delete(p); else expanded.add(p); renderFolders(); }
+    else if (node) toggleFolder(p);
+  }
+});
+$('#btnFolderAll').addEventListener('click', () => { scope = { all: true, folders: new Set() }; saveScope(); renderFolders(); });
+$('#btnFolderNone').addEventListener('click', () => { scope = { all: false, folders: new Set() }; saveScope(); renderFolders(); });
+$('#btnFolderDone').addEventListener('click', () => { show('start'); renderScope(); });
+
 /* ---------- Comprimir ---------- */
 /* Estimaciones para elegir candidatos; el tamaño real lo decide el nativo al comprimir. */
 const COMP = {
@@ -1111,7 +1334,7 @@ async function compFind() {
   $('#progressBar').style.width = '0%';
   let list;
   try {
-    list = normalizeBridge(await bridge.listMedia());
+    list = normalizeBridge(await bridge.listMedia()).filter(inScope);
   } catch {
     show('start');
     toast('No se pudo leer la galería. Revisa los permisos.');
@@ -1185,7 +1408,12 @@ async function compRun() {
   $('#btnCompStop').textContent = 'Detener';
   let res;
   try {
-    res = await bridge.compress(ids, { quality: Number(comp.opts.quality), overwrite: comp.opts.mode === 'overwrite' }, p => {
+    res = await bridge.compress(ids, { quality: Number(comp.opts.quality), overwrite: comp.opts.mode === 'overwrite', eco: pace === 'cool' }, p => {
+      if (p.phase === 'cool') {
+        coolingText($('#compRunText'), p.celsius);
+        $('#compRunName').textContent = '';
+        return;
+      }
       if (p.phase === 'confirm') {
         $('#compRunText').textContent = 'Esperando tu confirmación…';
         $('#compRunName').textContent = '';
@@ -1345,6 +1573,8 @@ function init() {
   const canCompress = !!(bridge && typeof bridge.compress === 'function');
   $('#compCard').hidden = !canCompress;
   $('#thumbCard').hidden = !(bridge && typeof bridge.pickThumbs === 'function');
+  $('#scopeCard').hidden = !bridge;
+  if (bridge) { renderPace(); renderScope(); }
   $('#cleanTitle').hidden = !canCompress;
   if (canCompress) renderCompOpts();
   if (!window.crypto || !crypto.subtle) {

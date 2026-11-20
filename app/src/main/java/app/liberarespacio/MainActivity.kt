@@ -202,7 +202,8 @@ class MainActivity : ComponentActivity() {
                 val o = JSONObject(optsJson)
                 opts = Compressor.Options(
                     quality = o.optInt("quality", 85).coerceIn(50, 95),
-                    overwrite = o.optBoolean("overwrite", false)
+                    overwrite = o.optBoolean("overwrite", false),
+                    eco = o.optBoolean("eco", false)
                 )
             } catch (e: Exception) {
                 respond(callId, false, "Opciones no válidas")
@@ -236,14 +237,19 @@ class MainActivity : ComponentActivity() {
                     val cfg = Analyzer.Config(
                         fullHashMax = c.getLong("fullHashMax"),
                         partialChunk = c.getInt("partialChunk"),
-                        thumbPx = c.getInt("thumbPx")
+                        thumbPx = c.getInt("thumbPx"),
+                        eco = c.optBoolean("eco", false)
                     )
-                    val res = Analyzer(this@MainActivity, { knownUris[it] }) { done, total ->
-                        progressTo(callId, JSONObject().put("done", done).put("total", total).toString())
+                    runOnUiThread { busy(true) }
+                    val res = Analyzer(this@MainActivity, { knownUris[it] }) { done, total, cooling, celsius ->
+                        progressTo(callId, JSONObject().put("done", done).put("total", total)
+                            .put("cooling", cooling).put("celsius", celsius ?: JSONObject.NULL).toString())
                     }.run(jobs, cfg)
                     respond(callId, true, res.toString())
                 } catch (e: Exception) {
                     respond(callId, false, "No se pudo analizar: ${e.message}")
+                } finally {
+                    runOnUiThread { busy(false) }
                 }
             }.start()
         }
@@ -312,6 +318,24 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /* ---------- Trabajo pesado: pantalla encendida pero atenuada ---------- */
+
+    private var busyCount = 0
+
+    /** Mantiene la pantalla encendida y baja el brillo mientras hay trabajo (la pantalla calienta). */
+    private fun busy(on: Boolean) {
+        busyCount = (busyCount + if (on) 1 else -1).coerceAtLeast(0)
+        val lp = window.attributes
+        if (busyCount > 0) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            lp.screenBrightness = 0.08f
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+            lp.screenBrightness = WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+        window.attributes = lp
+    }
+
     /* ---------- Miniaturas ---------- */
 
     private fun grantedTree(treeUri: String): Uri? {
@@ -338,7 +362,7 @@ class MainActivity : ComponentActivity() {
             progress = { progressTo(callId, it.toString()) }
         )
         compressor = c
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        busy(true)
         Thread {
             try {
                 respond(callId, true, c.run(ids, opts).toString())
@@ -346,7 +370,7 @@ class MainActivity : ComponentActivity() {
                 respond(callId, false, "No se pudo comprimir: ${e.message}")
             } finally {
                 compressor = null
-                runOnUiThread { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+                runOnUiThread { busy(false) }
             }
         }.start()
     }

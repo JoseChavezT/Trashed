@@ -29,6 +29,18 @@ mediante un puente nativo (`AndroidStorage` → `window.StorageBridge`).
 3. Marca elementos y confirma. Deben ir a la papelera del sistema (Fotos > Papelera).
 4. Si eliges solo algunas fotos (Android 14+), la app solo verá esas.
 
+## Carpetas, ritmo y temperatura
+
+- **Antes de empezar** (inicio): «Elegir carpetas» abre un explorador armado con `RELATIVE_PATH`
+  de MediaStore (cantidad y tamaño por carpeta, marca parcial, cadenas sin archivos unidas).
+  Limpiar y Comprimir solo usan los archivos de las carpetas elegidas. Se guarda en `localStorage`.
+- **Ritmo**: Rápido (2–6 hilos) o Fresco (2 hilos y pausas: 120 ms por foto analizada, 0,3 s por
+  foto y 5 s por video comprimido).
+- **Pausa térmica** (`Thermal.kt`): antes de cada archivo, si el estado térmico es MODERATE o más,
+  o la batería llega a 42 °C, espera hasta estado LIGHT y menos de 39 °C. La pantalla muestra
+  «Enfriando el teléfono».
+- Mientras analiza o comprime, la pantalla queda encendida con brillo bajo (la pantalla calienta).
+
 ## WhatsApp y miniaturas
 
 - Categoría **WhatsApp** en Limpiar: archivos bajo `.../WhatsApp/Media/` (también Business).

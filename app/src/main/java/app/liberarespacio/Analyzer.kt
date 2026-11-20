@@ -28,21 +28,24 @@ import kotlin.math.roundToInt
 class Analyzer(
     private val context: Context,
     private val uriFor: (String) -> Uri?,
-    private val progress: (Int, Int) -> Unit,
+    private val progress: (done: Int, total: Int, cooling: Boolean, celsius: Double?) -> Unit,
 ) {
-    data class Config(val fullHashMax: Long, val partialChunk: Int, val thumbPx: Int)
+    /** eco: menos hilos y una pausa corta entre archivos para que el teléfono se caliente menos. */
+    data class Config(val fullHashMax: Long, val partialChunk: Int, val thumbPx: Int, val eco: Boolean = false)
 
     fun run(jobs: JSONArray, cfg: Config): JSONObject {
         val total = jobs.length()
         val out = ConcurrentHashMap<String, JSONObject>()
         val done = AtomicInteger(0)
-        val threads = Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        val threads = if (cfg.eco) 2 else Runtime.getRuntime().availableProcessors().coerceIn(2, 6)
+        val thermal = Thermal(context)
         val pool = Executors.newFixedThreadPool(threads)
         var lastReport = 0L
         val lock = Any()
         for (i in 0 until total) {
             val job = jobs.getJSONObject(i)
             pool.execute {
+                thermal.coolDown({ false }) { cooling, c -> progress(done.get(), total, cooling, c) }
                 val id = job.getString("id")
                 val r = JSONObject()
                 try {
@@ -53,12 +56,13 @@ class Analyzer(
                     r.put("error", true)
                 }
                 out[id] = r
+                if (cfg.eco) Thread.sleep(ECO_PAUSE_MS)
                 val n = done.incrementAndGet()
                 val now = System.currentTimeMillis()
                 synchronized(lock) {
                     if (n == total || now - lastReport > 250) {
                         lastReport = now
-                        progress(n, total)
+                        progress(n, total, false, null)
                     }
                 }
             }
@@ -68,6 +72,10 @@ class Analyzer(
         val res = JSONObject()
         for ((k, v) in out) res.put(k, v)
         return res
+    }
+
+    companion object {
+        private const val ECO_PAUSE_MS = 120L
     }
 
     private fun luma(c: Int): Double =
